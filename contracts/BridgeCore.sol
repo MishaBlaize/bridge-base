@@ -18,6 +18,8 @@ error MinTimeToRefundIsNotReached(uint256 minTimeToRefund, uint256 creationTime)
 error OnlyRelayerOrCreatorCanRefund(uint256 nonce);
 error MsgValueShouldBeZero();
 error FailedToSendEther();
+error ChainIsNotSupported(uint8 chainId);
+error TokenIsNotSupportedOnChain(address token, uint8 chainId);
 error MinTimeToWaitBeforeRefundIsTooBig(uint256 minTimeToWaitBeforeRefund);
 
 contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgradeable {
@@ -71,6 +73,15 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
         _;
     }
 
+    /// @notice Modifier to check if chain is supported
+    /// @param chainId Chain id
+    modifier onlySupportedChain(uint8 chainId) {
+        if (!chainIsSupported[chainId]) {
+            revert ChainIsNotSupported(chainId);
+        }
+        _;
+    }
+
     /// @notice function to initialize the contract
     function initialize(
         uint8[] calldata _supportedChains,
@@ -94,7 +105,6 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
             if(_otherChainsTokenForNative[i] != address(0))
             addToken(_wrappedNative, _otherChainsTokenForNative[i], _supportedChains[i], _minAmountForNative);
         }
-        for(uint8 i = 0; i < _supportedChains.length; i++)
         minTimeToWaitBeforeRefund = _minTimeToWaitBeforeRefund;
     }
 
@@ -108,17 +118,20 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
         address to,
         uint8 dstChainId,
         uint256 amount
-    ) external payable whenNotPaused onlySupportedToken(token) {
+    ) external payable whenNotPaused onlySupportedToken(token) onlySupportedChain(dstChainId) {
         if(amount < minAmountForToken[token]) 
             revert AmountIsLessThanMinimum(amount, minAmountForToken[token]);
-        if (token == wrappedNative) 
+        if (token == wrappedNative){
             if(msg.value != amount) 
                 revert AmountIsNotEqualToMsgValue(amount, msg.value);
+        }
         else{
             if(msg.value != 0) 
                 revert MsgValueShouldBeZero();
             IERC20Upgradeable(token).safeTransferFrom(msg.sender, address(this), amount);
         }
+        if(otherChainToken[token][dstChainId] == address(0))
+            revert TokenIsNotSupportedOnChain(token, dstChainId);
         nonceInfo[nonce] = NonceInfo(
             token,
             msg.sender,
@@ -183,7 +196,7 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
         uint256 amount,
         uint8 fromChainId,
         uint256 nonceOnOtherChain
-    ) external whenNotPaused onlyRole(RELAYER_ROLE) onlySupportedToken(token) {
+    ) external whenNotPaused onlyRole(RELAYER_ROLE) onlySupportedToken(token) onlySupportedChain(fromChainId) {
         if(nonceIsUsed[nonceOnOtherChain]) 
             revert NonceIsUsed(nonceOnOtherChain);
         nonceIsUsed[nonceOnOtherChain] = true;
@@ -227,6 +240,8 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
         uint256 minAmount
     ) public onlyRole(DEFAULT_ADMIN_ROLE) {
         tokenIsSupported[token] = true;
+        if(!chainIsSupported[otherChainId])
+            chainIsSupported[otherChainId] = true;
         minAmountForToken[token] = minAmount;
         otherChainToken[token][otherChainId] = tokenOnSecondChain;
         emit AddToken(token, tokenOnSecondChain, minAmount);

@@ -4,7 +4,7 @@ import "./BridgeCore.sol";
 import "./interfaces/IUniswapV2Router.sol";
 pragma solidity 0.8.17;
 
-error InvalidInitializerUsed();
+error AlreadyInitialized();
 contract BridgeWithSwap is BridgeCore {
     using SafeERC20Upgradeable for IERC20Upgradeable;
     struct SwapInfo {
@@ -18,7 +18,7 @@ contract BridgeWithSwap is BridgeCore {
     IUniswapV2Router public swapRouter;
     /// @notice Mapping of nonce to swap info
     mapping(uint256 => SwapInfo) public swapInfo;
-    mapping(address => mapping(address => address[])) public getPathForTokenToToken;
+    mapping(address => mapping(address => address[])) internal _pathForTokenToToken;
 
     event SendWithSwap(
         address indexed tokenToSend,
@@ -40,44 +40,10 @@ contract BridgeWithSwap is BridgeCore {
         uint256 deadline
     );
 
-    modifier onlySupportedTokens(address token, address tokenToReceive) {
-        if (!tokenIsSupported[token]) {
-            revert TokenIsNotSupported(token);
-        }
-        else if (!tokenIsSupported[tokenToReceive]) {
-            revert TokenIsNotSupported(tokenToReceive);
-        }
-        _;
-    }
-
-    function initialize(
-        uint8[] calldata,
-        address,
-        uint256,
-        address[] calldata,
-        address,
-        uint256
-    ) public override initializer {
-        revert InvalidInitializerUsed();
-    }
-
-    function initialize(
-        uint8[] calldata _supportedChains,
-        address _wrappedNative,
-        uint256 _minAmountForNative,
-        address[] calldata _otherChainsTokenForNative,
-        address _relayer,
-        uint256 _minTimeToWaitBeforeRefund,
+    function initializeSwapRouter(
         address _swapRouter
-    ) public {
-        super.initialize(
-            _supportedChains,
-            _wrappedNative,
-            _minAmountForNative,
-            _otherChainsTokenForNative,
-            _relayer,
-            _minTimeToWaitBeforeRefund
-        );
+    ) external onlyRole(DEFAULT_ADMIN_ROLE){
+        if(address(swapRouter) != address(0)) revert AlreadyInitialized();
         swapRouter = IUniswapV2Router(_swapRouter);
     }
 
@@ -89,12 +55,13 @@ contract BridgeWithSwap is BridgeCore {
         uint256 amountToSend,
         uint256 minAmountToReceive,
         uint256 deadline
-    ) external payable whenNotPaused onlySupportedTokens(tokenToSend, tokenToReceive) {
+    ) external payable whenNotPaused onlySupportedToken(tokenToSend) onlySupportedChain(dstChainId) {
         if(amountToSend < minAmountForToken[tokenToSend]) 
             revert AmountIsLessThanMinimum(amountToSend, minAmountForToken[tokenToSend]);
-        if (tokenToSend == wrappedNative) 
+        if (tokenToSend == wrappedNative){
             if(msg.value != amountToSend) 
                 revert AmountIsNotEqualToMsgValue(amountToSend, msg.value);
+        }
         else{
             if(msg.value != 0) 
                 revert MsgValueShouldBeZero();
@@ -136,7 +103,7 @@ contract BridgeWithSwap is BridgeCore {
         uint8 fromChainId,
         uint256 nonceOnOtherChain,
         uint256 deadline
-    ) external whenNotPaused onlyRole(RELAYER_ROLE) onlySupportedTokens(tokenSent, tokenToReceive){
+    ) external whenNotPaused onlyRole(RELAYER_ROLE) onlySupportedToken(tokenToReceive) onlySupportedChain(fromChainId){
         if(nonceIsUsed[nonceOnOtherChain])
             revert NonceIsUsed(nonceOnOtherChain);
         nonceIsUsed[nonceOnOtherChain] = true;
@@ -153,19 +120,55 @@ contract BridgeWithSwap is BridgeCore {
         if(tokenSent == wrappedNative) {
             swapRouter.swapExactETHForTokens{value: amountSent}(
                 minAmountToReceive,
-                getPathForTokenToToken[wrappedNative][tokenToReceive],
+                getPathForTokenToToken(wrappedNative, tokenToReceive),
                 to,
                 deadline
             );
-        } else{
+        } 
+        else if(tokenToReceive == wrappedNative){
+            IERC20Upgradeable(tokenSent).safeApprove(address(swapRouter), amountSent);
+            swapRouter.swapExactTokensForETH(
+                amountSent,
+                minAmountToReceive,
+                getPathForTokenToToken(tokenSent, wrappedNative),
+                to,
+                deadline
+            );
+        }
+        else{
             IERC20Upgradeable(tokenSent).safeApprove(address(swapRouter), amountSent);
             swapRouter.swapExactTokensForTokens(
                 amountSent,
                 minAmountToReceive,
-                getPathForTokenToToken[tokenSent][tokenToReceive],
+                getPathForTokenToToken(tokenSent, tokenToReceive),
                 to,
                 deadline
             );
+        }
+    }
+
+    function getPathForTokenToToken(
+        address tokenSent,
+        address tokenToReceive
+    ) public view returns (address[] memory path) {
+        path = _pathForTokenToToken[tokenSent][tokenToReceive];
+        if(path.length == 0){
+            if(tokenSent == wrappedNative){
+                path = new address[](2);
+                path[0] = wrappedNative;
+                path[1] = tokenToReceive;
+            }
+            else if(tokenToReceive == wrappedNative){
+                path = new address[](2);
+                path[0] = tokenSent;
+                path[1] = wrappedNative;
+            }
+            else{
+                path = new address[](3);
+                path[0] = tokenSent;
+                path[1] = wrappedNative;
+                path[2] = tokenToReceive;
+            }
         }
     }
 
@@ -175,6 +178,6 @@ contract BridgeWithSwap is BridgeCore {
         address tokenToReceive,
         address[] calldata path
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        getPathForTokenToToken[tokenSent][tokenToReceive] = path;
+        _pathForTokenToToken[tokenSent][tokenToReceive] = path;
     }
 }
