@@ -71,6 +71,7 @@ contract BridgeWithSwap is BridgeCore {
             tokenToSend,
             msg.sender,
             to,
+            _chainId(),
             dstChainId,
             tokenToReceive,
             amountToSend,

@@ -28,6 +28,7 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
         address token;
         address creator;
         address to;
+        uint8 fromChainId;
         uint8 dstChainId;
         address dstToken;
         uint256 amount;
@@ -136,6 +137,7 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
             token,
             msg.sender,
             to,
+            _chainId(),
             dstChainId,
             otherChainToken[token][dstChainId],
             amount,
@@ -278,6 +280,15 @@ contract BridgeCore is UUPSUpgradeable, AccessControlUpgradeable, PausableUpgrad
     /// @notice function to unpause the bridge
     function unpause() public onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    /// @notice function to get chain id
+    function _chainId() public view returns (uint8) {
+        uint8 id;
+        assembly {
+            id := chainid()
+        }
+        return id;
     }
 
     /// @notice function to ensure that only admin can upgrade the contract
